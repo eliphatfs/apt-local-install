@@ -1,7 +1,7 @@
 # apt-local-install (aptli)
 Tool for installing `apt` packages without root permission in local space.
 
-## Get Started
+## Getting Started
 To use `aptli`, there are a few requirements (but should be satisfied in almost all use cases of the program):
 1. The script is written in Python. You will need a `python3` available in the system.
 2. `aptli` depends on `apt-get`, `ldconfig` and `dpkg`. These should come with all linux systems with `apt`.
@@ -9,7 +9,13 @@ To use `aptli`, there are a few requirements (but should be satisfied in almost 
    An `apt update` needs to be done by the system admin beforehand.
    This should always be okay on a system under maintenance.
 
-Then, clone the repository or copy the contents of `aptli` to some local file and execute:
+Then, clone the repository or copy the contents of `aptli` to some local file. If you have `wget` on your system you can do that by:
+```bash
+wget https://raw.githubusercontent.com/eliphatfs/apt-local-install/main/aptli
+chmod 755 ./aptli
+```
+
+Execute it to configure `aptli`:
 ```bash
 ./aptli
 ```
