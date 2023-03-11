@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+import os
+import glob
+import json
+import shutil
+import argparse
+import subprocess
+import collections
+
+
+cwd = os.getcwd()
+local_home = os.path.expanduser('~/.local')
+aptli_home = os.path.join(local_home, 'aptli')
+db_path = os.path.join(aptli_home, 'db.json')
+db_stage_path = os.path.join(aptli_home, 'db-stage.json')
+cache_path = os.path.join(aptli_home, 'cache')
+path_table = [
+    'usr/local/sbin',
+    'usr/local/bin',
+    'usr/sbin',
+    'usr/bin',
+    'sbin',
+    'bin',
+    'usr/games',
+    'usr/local/games'
+]
+ld_table = [
+    x.split(':')[0]
+    for x in
+    subprocess.check_output(['ldconfig', '-vN']).decode().strip().splitlines()
+    if ':' in x
+]
+ld_table = [x[1:] if x.startswith('/') else x for x in ld_table]
+warnings = []
+
+
+class Database:
+    def __init__(self, filepath=None) -> None:
+        self.packages = []
+        self.file_refs = collections.defaultdict(list)
+        self.journal_files = []
+        self.install_state = False
+        if filepath is not None:
+            self.load(filepath)
+
+    def load(self, filepath):
+        with open(filepath) as fi:
+            sdict = json.load(fi)
+        self.packages.extend(sdict['packages'])
+        self.file_refs.update(sdict['file_refs'])
+        self.journal_files.extend(sdict['journal_files'])
+        self.install_state = sdict['install_state']
+
+    def write(self):
+        with open(db_stage_path, 'w') as fo:
+            json.dump(self.__dict__, fo, indent=2)
+        # W1
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+        # W2
+        os.rename(db_stage_path, db_path)
+
+
+def take_care_of_journal(db):
+    # type: (Database) -> None
+    for file in db.journal_files:
+        if file not in db.file_refs:
+            fullpath = os.path.abspath(os.path.join(local_home, file))
+            if os.path.isfile(fullpath):
+                os.unlink(fullpath)
+            cpath = os.path.dirname(fullpath)
+            while not os.listdir(cpath):
+                os.rmdir(cpath)
+                cpath = os.path.dirname(cpath)
+    if len(db.journal_files):
+        db.journal_files.clear()
+        db.write()
+
+
+def recover_database():
+    if os.path.exists(db_stage_path):
+        # <= W1 or at W2.
+        if not os.path.exists(db_path):
+            # at W2. recover from staging file.
+            os.rename(db_stage_path, db_path)
+        else:
+            # <= W1, discard.
+            os.unlink(db_stage_path)
+    if os.path.exists(db_path):
+        db = Database(db_path)
+    else:
+        db = Database()
+    take_care_of_journal(db)
+    return db
+
+
+def install_aptli():
+    install_target = os.path.expanduser('~/.local/usr/bin')
+    install_path = os.path.join(install_target, 'aptli')
+    os.makedirs(install_target, exist_ok=True)
+    shutil.copyfile(__file__, install_path)
+    os.chmod(install_path, 0o755)
+    print("Installed aptli file.")
+
+
+def install_paths():
+    appendee = '\nexport PATH=' + ':'.join([os.path.join(local_home, p) for p in path_table]) + ':$PATH'
+    appendee += '\nexport LD_LIBRARY_PATH=$LD_LIBRARY_PATH:' + ':'.join([os.path.join(local_home, p) for p in ld_table])
+    appendee += '\n'
+    with open(os.path.expanduser('~/.bashrc'), 'a+') as fo:
+        fo.write(appendee)
+    print('Configuration of aptli is done. You may need to re-login into the shell to see the changes.')
+
+
+def download_deb(package):
+    subprocess.check_call(['apt-get', 'download', package], cwd=cache_path)
+
+
+def packages_from_packlist(pliststr):
+    # type: (str) -> list[str]
+    if len(pliststr.strip()) == 0:
+        return []
+    return [
+        spec.split()[0] for spec in
+        pliststr.split(',')
+    ]
+
+
+def get_contents(package):
+    fsys_stream = subprocess.Popen(['dpkg-deb', '--fsys-tarfile', package], stdout=subprocess.PIPE)
+    contents_list = subprocess.check_output(['tar', 't'], stdin=fsys_stream.stdout).decode().strip().splitlines()
+    return [os.path.relpath(os.path.join(local_home, c), local_home) for c in contents_list]
+
+
+def do_install_packages(db, syspkglist, packages):
+    # type: (Database, list, list) -> None
+    print("Installing:")
+    for package in packages:
+        print('\t', os.path.basename(package))
+    assert len(db.journal_files) == 0, 'internal error: non-empty journal before unit install'
+    for package in packages:
+        db.journal_files.extend(get_contents(package))
+    db.write()
+
+    for package in packages:
+        subprocess.check_call(['dpkg-deb', '-x', package, local_home])
+
+    db.journal_files.clear()
+    package_names = []
+    for package in packages:
+        package_name = subprocess.check_output(['dpkg-deb', '-f', package, 'Package']).decode().strip()
+        package_names.append(package_name)
+        for file in get_contents(package):
+            db.file_refs[file].append(package_name)
+        db.packages.append(package_name)
+    db.write()
+    print('Installed:', ', '.join(package_names))
+    for package_name, package in zip(package_names, packages):
+        recommends = packages_from_packlist(subprocess.check_output(['dpkg-deb', '-f', package, 'Recommends']).decode())
+        for rec in recommends:
+            if rec not in syspkglist and rec not in db.packages:
+                warnings.append(
+                    'recommended package %s from %s does not exist. This may indicate problems of the system.'
+                    % (rec, package_name)
+                )
+
+
+def install_prepare(db, syspkglist, package, stage):
+    # type: (Database, list, str, list) -> list
+    if package in syspkglist:
+        print('Already installed (system):', package)
+        return []
+    if package in db.packages:
+        print('Already installed (aptli):', package)
+        return []
+
+    if not os.path.isfile(package):
+        package_cand = glob.glob(os.path.join(cache_path, package + '_*.deb'))
+        if len(package_cand) == 0:
+            download_deb(package)
+            package_cand = glob.glob(os.path.join(cache_path, package + '_*.deb'))
+        assert len(package_cand) > 0, 'internal error: deb file not found after downloading'
+        package = max(package_cand, key=lambda x: os.stat(x).st_mtime)
+
+    package = os.path.abspath(package)
+    print('Installing file:', os.path.basename(package))
+
+    pre_depends = packages_from_packlist(subprocess.check_output(['dpkg-deb', '-f', package, 'Pre-Depends']).decode())
+    for depend in pre_depends:
+        print('Installing pre-dependency:', os.path.basename(package), '->', depend)
+        install(db, syspkglist, depend)
+
+    to_install = [package]
+
+    depends = packages_from_packlist(subprocess.check_output(['dpkg-deb', '-f', package, 'Depends']).decode())
+    for depend in depends:
+        if depend in stage:
+            continue
+        stage.append(depend)
+        print('Preparing dependency:', os.path.basename(package), '->', depend)
+        to_install.extend(install_prepare(db, syspkglist, depend, stage))
+
+    to_install = [t for t in to_install if t not in db.packages]  # filter installed pre-depends
+    return to_install
+
+
+def install(db, syspkglist, package):
+    do_install_packages(
+        db, syspkglist,
+        install_prepare(db, syspkglist, package, [])
+    )
+
+
+def remove(db, syspkglist, package):
+    # type: (Database, list, str) -> None
+    assert len(db.journal_files) == 0, 'internal error: non-empty journal before remove'
+    if package not in db.packages:
+        if package not in syspkglist:
+            raise ValueError('Attempting to remove non-installed package', package)
+        raise ValueError('Package to remove is not installed by aptli', package)
+    print('Removing:', package)
+    print('Files to remove:')
+    for file, pkgsublist in db.file_refs.items():
+        if package in pkgsublist:
+            pkgsublist.remove(package)
+        if len(pkgsublist) == 0:
+            db.journal_files.append(file)
+            print('\t', file)
+    for file in db.journal_files:
+        popped = db.file_refs.pop(file)
+        assert len(popped) == 0, 'internal error: removing referenced files'
+    db.packages.remove(package)
+    db.write()
+    take_care_of_journal(db)
+    print('Removed:', package)
+
+
+def main():
+    argp = argparse.ArgumentParser('aptli')
+    argp.add_argument(
+        'packages', metavar='pkg', type=str, nargs='*',
+        help='package name(s) or `.deb` file(s) to be installed'
+    )
+    argp.add_argument(
+        '--remove', action='store_true',
+        help='remove instead of installing packages (only packages installed with `aptli` can be removed)'
+    )
+    argp.add_argument(
+        '--upgrade-aptli', action='store_true',
+        help='replace installed aptli with the executing aptli'
+    )
+    args = argp.parse_args()
+    os.makedirs(cache_path, exist_ok=True)
+    db = recover_database()
+    if not db.install_state:
+        db.install_state = True
+        db.write()
+        install_aptli()
+        install_paths()
+    elif args.upgrade_aptli:
+        install_aptli()
+    pkglist = [
+        x.split()[0]
+        for x in
+        subprocess.check_output(['dpkg', '--get-selections']).decode().strip().splitlines()
+        if 'deinstall' not in x
+    ]
+    for pkg in args.packages:
+        if args.remove:
+            remove(db, pkglist, pkg)
+        else:
+            install(db, pkglist, pkg)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+        for warning in warnings:
+            print('Warning:', warning)
+    finally:
+        os.chdir(cwd)
