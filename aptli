@@ -30,6 +30,10 @@ ld_table = [
     subprocess.check_output(['ldconfig', '-vN']).decode().strip().splitlines()
     if ':' in x
 ]
+force_ld_paths = ['/usr/lib', '/lib', '/lib64', '/usr/lib64']
+for force_path in force_ld_paths:
+    if force_path not in ld_table:
+        ld_table.append(force_path)
 ld_table = [x[1:] if x.startswith('/') else x for x in ld_table]
 warnings = []
 
