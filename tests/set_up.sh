@@ -1,4 +1,5 @@
 source basics.sh
 
-chmod 755 ../aptli
-../aptli
+cpp ../aptli ~
+chmod 755 ~/aptli
+~/aptli
