@@ -1,5 +1,5 @@
 source basics.sh
 
-cpp ../aptli ~/
+cp ../aptli ~/
 chmod 755 ~/aptli
 ~/aptli
