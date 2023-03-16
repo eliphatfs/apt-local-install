@@ -55,7 +55,9 @@ the shared libraries could be loaded by the system linker (`ld`).
 It reads and parses `.deb` files, automatically finds and handles the dependencies, and downloads required packages with `apt-get download`.
 
 ## Future
-+ Set up test cases and CI for the tool.
++ More CI test cases for the tool.
++ Setup for include files/`-dev` packages.
++ Virtual packages.
 + Try to support triggers and custom install configuration scripts.
 + Version resolution and conflict resolution.
 + Different verbose levels.
