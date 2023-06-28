@@ -253,6 +253,9 @@ def main():
         '--upgrade-aptli', action='store_true',
         help='replace installed aptli with the executing aptli'
     )
+    argp.add_argument(
+        '-y', '--yes', action='store_true'
+    )
     args = argp.parse_args()
     os.makedirs(cache_path, exist_ok=True)
     db = recover_database()
