@@ -20,8 +20,11 @@ Execute it to configure `aptli`:
 ./aptli
 ```
 
-`aptli` will configure itself. You probably need to re-login (or re-enter the `bash` shell at least) into the system before
-the configurations come into effect.
+`aptli` will configure itself. You probably need to do either of these before
+the configurations come into effect:
+
+1. Re-login (or re-enter the `bash` shell at least) into the system.
+2. `source ~/.bashrc` in the running shell.
 
 Now, you can install packages without root permission by:
 ```bash
@@ -61,3 +64,4 @@ It reads and parses `.deb` files, automatically finds and handles the dependenci
 + Try to support triggers and custom install configuration scripts.
 + Version resolution and conflict resolution.
 + Different verbose levels.
++ Parsing repository index.
